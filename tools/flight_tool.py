@@ -58,7 +58,7 @@ COUNTRY_ALIASES = {
 }
 
 
- COUNTRY_MAIN_AIRPORT = {
+COUNTRY_MAIN_AIRPORT = {
     "BD": "DAC",
     "IN": "DEL",
     "JP": "NRT",
