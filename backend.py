@@ -57,10 +57,6 @@ llm = ChatGroq(
 )
 
 
-# =========================
-# State
-# =========================
-
 class TravelState(TypedDict):
     messages: Annotated[list[AnyMessage], operator.add]
     user_query: str
@@ -68,6 +64,102 @@ class TravelState(TypedDict):
     hotel_results: str
     itinerary: str
     llm_calls: int
+
+    is_travel_request: bool
+    guardrail_message: str
+
+
+# =========================
+# Input Guardrail Agent
+# =========================
+
+def input_guardrail(state: TravelState):
+
+    user_query = state["user_query"]
+
+    prompt = f"""
+You are an input validation guardrail for a travel planning AI.
+
+Your job is to determine whether the user's request is related to travel.
+
+User request:
+{user_query}
+
+A valid travel request can involve:
+
+- Trip planning
+- Flights
+- Hotels
+- Accommodation
+- Tourist places
+- Destinations
+- Travel itinerary
+- Transportation
+- Travel budget
+- Vacation planning
+- Country or city travel information
+
+If the request is travel-related, respond with exactly:
+
+VALID
+
+If the request is NOT related to travel, respond with:
+
+INVALID
+
+Do not explain anything.
+"""
+
+    response = llm.invoke([
+        SystemMessage(
+            content="You are a strict travel domain guardrail."
+        ),
+        HumanMessage(content=prompt)
+    ])
+
+    decision = response.content.strip().upper()
+
+    is_valid = "VALID" in decision and "INVALID" not in decision
+
+    if is_valid:
+
+        return {
+            "is_travel_request": True,
+            "guardrail_message": "",
+            "messages": [
+                AIMessage(
+                    content="Travel request validated."
+                )
+            ],
+            "llm_calls": state.get("llm_calls", 0) + 1
+        }
+
+    return {
+        "is_travel_request": False,
+
+        "guardrail_message":
+            "I can help with travel-related requests such as trip planning, flights, hotels, destinations, budgets, and itineraries.",
+
+        "messages": [
+            AIMessage(
+                content=
+                "I can help with travel-related requests such as trip planning, flights, hotels, destinations, budgets, and itineraries."
+            )
+        ],
+
+        "llm_calls": state.get("llm_calls", 0) + 1
+    }
+
+# =========================
+# Guardrail Router
+# =========================
+
+def guardrail_router(state: TravelState):
+
+    if state["is_travel_request"]:
+        return "flight_agent"
+
+    return "guardrail_response"
 
 
 # =========================
@@ -138,7 +230,19 @@ Make the itinerary practical, budget-aware, and easy to follow.
         "llm_calls": state.get("llm_calls", 0) + 1
     }
 
+# =========================
+# Guardrail Response Agent
+# =========================
 
+def guardrail_response(state: TravelState):
+
+    return {
+        "messages": [
+            AIMessage(
+                content=state["guardrail_message"]
+            )
+        ]
+    }
 
 # =========================
 # Final Response Agent
@@ -192,16 +296,91 @@ Important:
 
 graph = StateGraph(TravelState)
 
-graph.add_node("flight_agent", flight_agent)
-graph.add_node("hotel_agent", hotel_agent)
-graph.add_node("itinerary_agent", itinerary_agent)
-graph.add_node("final_agent", final_agent)
 
-graph.add_edge(START, "flight_agent")
-graph.add_edge("flight_agent", "hotel_agent")
-graph.add_edge("hotel_agent", "itinerary_agent")
-graph.add_edge("itinerary_agent", "final_agent")
-graph.add_edge("final_agent", END)
+# Nodes
+
+graph.add_node(
+    "input_guardrail",
+    input_guardrail
+)
+
+graph.add_node(
+    "flight_agent",
+    flight_agent
+)
+
+graph.add_node(
+    "hotel_agent",
+    hotel_agent
+)
+
+graph.add_node(
+    "itinerary_agent",
+    itinerary_agent
+)
+
+graph.add_node(
+    "final_agent",
+    final_agent
+)
+
+graph.add_node(
+    "guardrail_response",
+    guardrail_response
+)
+
+
+# START
+
+graph.add_edge(
+    START,
+    "input_guardrail"
+)
+
+
+# Conditional Routing
+
+graph.add_conditional_edges(
+    "input_guardrail",
+
+    guardrail_router,
+
+    {
+        "flight_agent": "flight_agent",
+        "guardrail_response": "guardrail_response"
+    }
+)
+
+
+# Travel Workflow
+
+graph.add_edge(
+    "flight_agent",
+    "hotel_agent"
+)
+
+graph.add_edge(
+    "hotel_agent",
+    "itinerary_agent"
+)
+
+graph.add_edge(
+    "itinerary_agent",
+    "final_agent"
+)
+
+graph.add_edge(
+    "final_agent",
+    END
+)
+
+
+# Invalid Request Workflow
+
+graph.add_edge(
+    "guardrail_response",
+    END
+)
 
 
 # =========================
@@ -235,20 +414,29 @@ def run_travel_agent(user_input: str, thread_id: str | None = None):
             "thread_id": thread_id
         }
     }
-
     result = travel_graph.invoke(
-        {
-            "messages": [
-                HumanMessage(content=user_input)
-            ],
-            "user_query": user_input,
-            "flight_results": "",
-            "hotel_results": "",
-            "itinerary": "",
-            "llm_calls": 0
-        },
-        config=config
-    )
+    {
+        "messages": [
+            HumanMessage(content=user_input)
+        ],
+
+        "user_query": user_input,
+
+        "flight_results": "",
+
+        "hotel_results": "",
+
+        "itinerary": "",
+
+        "llm_calls": 0,
+
+        "is_travel_request": False,
+
+        "guardrail_message": ""
+    },
+
+    config=config
+)
 
     final_answer = result["messages"][-1].content
 
